@@ -2,16 +2,14 @@
 
 import { useEffect, useState } from "react";
 import type { Rubric } from "@/lib/schema";
-import type { RubricSummary, StoredRubric } from "@/lib/store";
 import {
-  ApiRequestError,
-  defaultRubric,
   deleteRubric,
-  listRubrics,
-  parseRubric,
   saveRubric,
   updateRubric,
-} from "@/lib/client-api";
+  useRubricList,
+  type StoredRubric,
+} from "@/lib/rubric-store";
+import { ApiRequestError, defaultRubric, parseRubric } from "@/lib/client-api";
 import { FileDropzone } from "@/components/FileDropzone";
 import {
   Alert,
@@ -76,11 +74,9 @@ export function RubricBar({
 export function RubricDialog({
   active,
   onClose,
-  onChanged,
 }: {
   active: StoredRubric | null;
   onClose: () => void;
-  onChanged: () => Promise<void>;
 }) {
   const [tab, setTab] = useState<Tab>(active ? "saved" : "new");
 
@@ -136,14 +132,13 @@ export function RubricDialog({
         </div>
 
         <div className="p-5">
-          {tab === "saved" && <SavedTab onChanged={onChanged} onClose={onClose} />}
-          {tab === "new" && <NewTab onChanged={onChanged} onClose={onClose} />}
+          {tab === "saved" && <SavedTab onClose={onClose} />}
+          {tab === "new" && <NewTab onClose={onClose} />}
           {tab === "edit" && active && (
             // key: aktif rubric değişince taslak state'i sıfırdan kurulsun.
             <EditTab
               key={`${active.id}:${active.updatedAt}`}
               entry={active}
-              onChanged={onChanged}
               onClose={onClose}
             />
           )}
@@ -155,82 +150,36 @@ export function RubricDialog({
 
 /* ---------------------------- Kayıtlı rubric'ler --------------------------- */
 
-function SavedTab({
-  onChanged,
-  onClose,
-}: {
-  onChanged: () => Promise<void>;
-  onClose: () => void;
-}) {
-  const [items, setItems] = useState<RubricSummary[] | null>(null);
-  const [busyId, setBusyId] = useState<string | null>(null);
+function SavedTab({ onClose }: { onClose: () => void }) {
+  const items = useRubricList();
   const [error, setError] = useState<string | null>(null);
 
-  async function refresh() {
-    try {
-      setItems((await listRubrics()).rubrics);
-    } catch (err) {
-      setError(errorText(err, "Kayıtlı rubric'ler alınamadı."));
-    }
-  }
-
-  useEffect(() => {
-    // Panel kapanırsa gelen yanıt sökülmüş bileşene yazmasın.
-    let cancelled = false;
-    listRubrics()
-      .then((res) => {
-        if (!cancelled) setItems(res.rubrics);
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) setError(errorText(err, "Kayıtlı rubric'ler alınamadı."));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  async function activate(id: string) {
-    setBusyId(id);
+  function activate(id: string) {
     setError(null);
-    try {
-      await updateRubric(id, { activate: true });
-      await onChanged();
-      onClose();
-    } catch (err) {
-      setError(errorText(err, "Rubric etkinleştirilemedi."));
-    } finally {
-      setBusyId(null);
+    if (!updateRubric(id, { activate: true })) {
+      setError("Rubric bulunamadı.");
+      return;
     }
+    onClose();
   }
 
-  async function remove(id: string, title: string) {
+  function remove(id: string, title: string) {
     if (!window.confirm(`"${title}" silinsin mi? Bu işlem geri alınamaz.`)) return;
-    setBusyId(id);
     setError(null);
-    try {
-      await deleteRubric(id);
-      await refresh();
-      await onChanged();
-    } catch (err) {
-      setError(errorText(err, "Rubric silinemedi."));
-    } finally {
-      setBusyId(null);
-    }
+    deleteRubric(id);
   }
-
-  if (items === null && !error) return <p className="text-sm text-muted">Yükleniyor…</p>;
 
   return (
     <div className="space-y-3">
       {error && <Alert tone="danger">{error}</Alert>}
 
-      {items?.length === 0 && (
+      {items.length === 0 && (
         <p className="text-sm text-muted">
           Henüz kayıtlı rubric yok. &ldquo;Yeni yükle&rdquo; sekmesinden ekleyin.
         </p>
       )}
 
-      {items?.map((item) => (
+      {items.map((item) => (
         <div
           key={item.id}
           className={cx(
@@ -254,21 +203,11 @@ function SavedTab({
           </div>
           <div className="flex shrink-0 items-center gap-1">
             {!item.isActive && (
-              <Button
-                size="sm"
-                variant="primary"
-                loading={busyId === item.id}
-                onClick={() => void activate(item.id)}
-              >
+              <Button size="sm" variant="primary" onClick={() => activate(item.id)}>
                 Kullan
               </Button>
             )}
-            <Button
-              size="sm"
-              variant="danger"
-              disabled={busyId === item.id}
-              onClick={() => void remove(item.id, item.title)}
-            >
+            <Button size="sm" variant="danger" onClick={() => remove(item.id, item.title)}>
               Sil
             </Button>
           </div>
@@ -280,13 +219,7 @@ function SavedTab({
 
 /* ------------------------------- Yeni rubric ------------------------------ */
 
-function NewTab({
-  onChanged,
-  onClose,
-}: {
-  onChanged: () => Promise<void>;
-  onClose: () => void;
-}) {
+function NewTab({ onClose }: { onClose: () => void }) {
   const [text, setText] = useState("");
   const [sourceNote, setSourceNote] = useState<string | null>(null);
   const [preview, setPreview] = useState<Rubric | null>(null);
@@ -325,19 +258,10 @@ function NewTab({
     }
   }
 
-  async function save() {
+  function save() {
     if (!preview) return;
-    setBusy("save");
-    setError(null);
-    try {
-      await saveRubric(preview, true);
-      await onChanged();
-      onClose();
-    } catch (err) {
-      setError(errorText(err, "Rubric kaydedilemedi."));
-    } finally {
-      setBusy(null);
-    }
+    saveRubric(preview, true);
+    onClose();
   }
 
   return (
@@ -410,7 +334,7 @@ function NewTab({
         ) : (
           <>
             <Button onClick={() => setPreview(null)}>Geri</Button>
-            <Button variant="primary" loading={busy === "save"} onClick={() => void save()}>
+            <Button variant="primary" onClick={save}>
               Kaydet ve kullan
             </Button>
           </>
@@ -460,17 +384,8 @@ function RubricPreview({ rubric }: { rubric: Rubric }) {
 
 /* ------------------------------- Düzenleme -------------------------------- */
 
-function EditTab({
-  entry,
-  onChanged,
-  onClose,
-}: {
-  entry: StoredRubric;
-  onChanged: () => Promise<void>;
-  onClose: () => void;
-}) {
+function EditTab({ entry, onClose }: { entry: StoredRubric; onClose: () => void }) {
   const [draft, setDraft] = useState<Rubric>(entry.rubric);
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const scoreSum = draft.criteria.reduce((s, c) => s + (c.maxScore || 0), 0);
@@ -483,18 +398,13 @@ function EditTab({
     }));
   }
 
-  async function save() {
-    setBusy(true);
+  function save() {
     setError(null);
-    try {
-      await updateRubric(entry.id, { rubric: draft, activate: true });
-      await onChanged();
-      onClose();
-    } catch (err) {
-      setError(errorText(err, "Değişiklikler kaydedilemedi."));
-    } finally {
-      setBusy(false);
+    if (!updateRubric(entry.id, { rubric: draft, activate: true })) {
+      setError("Rubric bulunamadı.");
+      return;
     }
+    onClose();
   }
 
   return (
@@ -561,7 +471,7 @@ function EditTab({
 
       <div className="flex justify-end gap-2">
         <Button onClick={() => setDraft(entry.rubric)}>Sıfırla</Button>
-        <Button variant="primary" loading={busy} onClick={() => void save()}>
+        <Button variant="primary" onClick={save}>
           Kaydet
         </Button>
       </div>

@@ -57,12 +57,12 @@ Bileşen sekme gizlendiğinde veya görünüm dışına çıktığında çizimi 
 1. Öğretmen rubric'i yapıştırır **veya** dosya/fotoğraf olarak yükler →
    `POST /api/extract` metni çıkarır, `POST /api/rubric/parse` bunu yapılandırılmış
    JSON'a çevirir (kriter, ağırlık, puan, seviyeler).
-2. Rubric `POST /api/rubrics` ile **kaydedilir ve aktif hale gelir**. Aynı rubric
-   ile arka arkaya çok sayıda makale değerlendirilebilir; arayüzdeki "rubric'i değiştir"
-   düğmesi aktif kaydı değiştirir.
+2. Rubric tarayıcıya kaydedilir ve aktif hale gelir. Aynı rubric ile arka arkaya çok
+   sayıda makale değerlendirilebilir; "Değiştir" düğmesi aktif rubric'i değiştirir.
 3. Makale yapıştırılır veya yüklenir → `POST /api/extract`.
-4. `POST /api/grade` makaleyi aktif rubric'e göre puanlar; her kriter için gerekçe,
-   alıntılar, güçlü yönler, gelişim önerileri ve öğrenci özeti döndürür.
+4. Her kriter için ayrı bir `POST /api/grade/criterion` isteği gider (paralel);
+   ardından `POST /api/grade/summary` sonuçları tek bir geri bildirime dönüştürür.
+   Toplam puan istemcide kriter puanları toplanarak bulunur.
 
 ## API
 
@@ -102,29 +102,17 @@ kriter puanlarının toplamı `totalPoints`'e ölçeklenir. Yapılan her düzelt
 `warnings` içinde bildirilir; modelin metinde olmayan varsayımları
 `rubric.assumptions` altında listelenir.
 
-### Kaydedilmiş rubric'ler
+### `POST /api/grade/criterion` — `application/json`
 
-| uç nokta | iş |
-| --- | --- |
-| `GET /api/rubrics` | Kayıtlı rubric listesi + hangisi aktif |
-| `POST /api/rubrics` | `{ rubric, activate }` — kaydeder, istenirse aktif yapar |
-| `GET /api/rubrics/{id}` | Tek rubric'in tamamı |
-| `PUT /api/rubrics/{id}` | `{ rubric?, activate? }` — düzenler ve/veya aktif yapar |
-| `DELETE /api/rubrics/{id}` | Siler; aktif olan silinirse en son güncellenen kayda geçer |
-
-Depolama tek kullanıcılık yerel bir dosyadır: `data/rubrics.json` (git'e girmez,
-yarım yazma olmaması için geçici dosya + yeniden adlandırma ile yazılır). Çok
-kullanıcılı bir kuruluma geçilirse `src/lib/store.ts` bir veritabanıyla değiştirilmelidir.
-
-### `POST /api/grade` — `application/json`
-
-Rubric üç yoldan gelebilir: gövdedeki `rubric`, `rubricId` veya **kayıtlı aktif rubric**
-(hiçbiri gönderilmezse). Aktif rubric de yoksa `409` ve açıklayıcı mesaj döner.
+Makaleyi rubric'teki **tek bir** kritere göre puanlar. Notlandırma bilinçli olarak
+kriterlere bölündü: tek çağrıda tüm rubric'i değerlendirmek isteği 85+ saniye
+tutuyordu, kriterler paralel gidince hem her istek kısalıyor hem de öğretmen
+ilerlemeyi görebiliyor.
 
 ```json
 {
-  "rubric": { "...": "isteğe bağlı; yoksa aktif rubric kullanılır" },
-  "rubricId": "isteğe bağlı",
+  "rubric": { "...": "/api/rubric/parse çıktısı" },
+  "criterionId": "argument",
   "essay": "makale metni",
   "essayTitle": "isteğe bağlı",
   "language": "tr",
@@ -135,20 +123,30 @@ Rubric üç yoldan gelebilir: gövdedeki `rubric`, `rubricId` veya **kayıtlı a
 Yanıt:
 ```json
 {
-  "overall": { "score": 78, "maxScore": 100, "percentage": 78, "letterGrade": "BA", "verdict": "..." },
-  "criteria": [{
-    "id": "argument", "name": "...", "score": 24, "maxScore": 30, "weight": 0.3,
-    "level": "İyi", "justification": "...",
-    "strengths": ["..."], "improvements": ["..."],
-    "evidence": [{ "quote": "...", "comment": "...", "type": "strength",
-                   "verified": true, "startIndex": 412, "endIndex": 468 }]
-  }],
-  "studentSummary": "öğrenciyle paylaşılabilecek kısa özet",
-  "teacherNotes": "yalnızca öğretmene",
-  "nextSteps": ["..."],
-  "meta": { "model": "...", "quotesTotal": 9, "quotesVerified": 9, "warnings": [] }
+  "id": "argument", "name": "Argüman ve Tez",
+  "score": 24, "maxScore": 30, "weight": 0.3, "level": "İyi",
+  "justification": "...",
+  "strengths": ["..."], "improvements": ["..."],
+  "evidence": [{ "quote": "...", "comment": "...", "type": "strength",
+                 "verified": true, "startIndex": 412, "endIndex": 468 }],
+  "quotesTotal": 3, "quotesVerified": 3, "warnings": []
 }
 ```
+
+### `POST /api/grade/summary` — `application/json`
+
+Kriter sonuçlarını öğrenci özeti ve öğretmen notlarına dönüştürür.
+
+```json
+{
+  "rubric": { "...": "aynı rubric" },
+  "results": [{ "...": "kriter yanıtları" }],
+  "essayTitle": "isteğe bağlı",
+  "language": "tr"
+}
+```
+
+Yanıt: `{ verdict, letterGrade, studentSummary, teacherNotes, nextSteps, model }`
 
 ## Güvenilirlik notları
 
@@ -179,6 +177,36 @@ Bu üç davranış bilinçli tasarım kararlarıdır:
 Model bir öğretmenin yerine geçmez: puanlar bir ilk taslak olarak ele alınmalı,
 `meta.warnings` boş değilse sonuç öğrenciyle paylaşılmadan önce gözden geçirilmelidir.
 
+## Rubric'ler nerede saklanıyor?
+
+Rubric'ler **tarayıcıda** (`localStorage`) tutulur, sunucuda değil. İki sebep:
+
+- Uygulama Vercel'de sunucusuz çalışır: dosya sistemi salt okunurdur ve her istek
+  farklı bir örneğe düşebilir, yani sunucuya yazılan rubric kalıcı olmaz.
+- Uygulamada oturum açma yok. Sunucuda tutulan tek bir liste, adresi bilen herkesin
+  aynı rubric'leri görmesi ve silebilmesi demek olurdu.
+
+Sınırı: rubric'ler o tarayıcıya özeldir, başka bilgisayardan görünmez. Çok cihazlı
+veya çok kullanıcılı bir kurulum gerekirse `src/lib/rubric-store.ts` bir veritabanı
+ve oturum katmanıyla değiştirilmelidir.
+
+## Vercel'e yayınlama
+
+1. Depoyu Vercel'e bağlayın (Next.js otomatik algılanır, ek ayar gerekmez).
+2. **Environment Variables** bölümüne ekleyin:
+   - `GOOGLE_AI_API_KEY` — Google AI Studio anahtarınız
+   - `GEMMA_MODEL` — `gemma-4-31b-it`
+3. Deploy edin.
+
+Süre sınırı: notlandırma kriter kriter yapılır ve her istek 40–65 saniye sürer.
+Vercel'in fluid compute ile gelen varsayılan sınırı 300 saniyedir, bu yüzden
+rotalar `maxDuration = 300` ile işaretlenmiştir.
+
+**Anahtar tarayıcıya hiç gönderilmez;** tüm model çağrıları sunucu rotalarından geçer.
+Uygulamada oturum açma olmadığı için adresi bilen herkes anahtarınızla notlandırma
+yapabilir — bağlantıyı yalnızca güvendiğiniz kişilerle paylaşın veya Vercel'in
+[Deployment Protection](https://vercel.com/docs/deployment-protection) ayarını açın.
+
 ## Dizin yapısı
 
 ```
@@ -190,10 +218,10 @@ src/lib/ai/json.ts         şema doğrulamalı, yeniden denemeli JSON üretimi
 src/lib/prompts/           rubric ve notlandırma prompt'ları + varsayılan rubric
 src/lib/quotes.ts          alıntı doğrulama ve konum bulma
 src/lib/rubric.ts          rubric ayrıştırma ve normalize etme
-src/lib/grading.ts         notlandırma akışı ve puan uzlaştırma
+src/lib/grading.ts         kriter puanlama ve özet üretimi
 src/lib/extract/text.ts    txt/md/docx/pdf/görsel metin çıkarma
 src/lib/extract/image.ts   fotoğraf/taramadan metin okuma (model görüşü)
-src/lib/store.ts           kaydedilmiş rubric'ler (data/rubrics.json)
+src/lib/rubric-store.ts    tarayıcıda rubric saklama (localStorage + React kancaları)
 src/app/api/               route handler'lar
 src/app/page.tsx           tek sayfalık akış (rubric → makale → sonuç)
 src/components/            RubricPanel, EssayPanel, ResultPanel, FileDropzone

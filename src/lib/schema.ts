@@ -70,28 +70,59 @@ export const criterionResultSchema = z.object({
   evidence: z.array(evidenceSchema).default([]),
 });
 
-export const gradingResultSchema = z.object({
-  overall: z.object({
-    score: z.number().min(0),
-    maxScore: z.number().positive(),
-    percentage: z.number().min(0).max(100),
-    letterGrade: z.string().nullable().default(null),
-    /** Bir cümlelik genel değerlendirme. */
-    verdict: z.string().default(""),
-  }),
-  criteria: z.array(criterionResultSchema).min(1),
-  /** Öğretmenin öğrenciyle paylaşabileceği kısa özet. */
+/** Modelin tek bir kriter için döndürdüğü ham yanıt. */
+export const criterionGradeSchema = z.object({
+  score: z.number().min(0),
+  level: z.string().nullable().default(null),
+  justification: z.string().min(1),
+  strengths: z.array(z.string()).default([]),
+  improvements: z.array(z.string()).default([]),
+  evidence: z
+    .array(
+      z.object({
+        quote: z.string().min(1),
+        comment: z.string().default(""),
+        type: z.enum(["strength", "weakness", "neutral"]).default("neutral"),
+      }),
+    )
+    .default([]),
+});
+
+/** Modelin genel özet adımında döndürdüğü ham yanıt. */
+export const summarySchema = z.object({
+  verdict: z.string().default(""),
+  letterGrade: z.string().nullable().default(null),
   studentSummary: z.string().min(1),
-  /** Sadece öğretmene özel notlar. */
   teacherNotes: z.string().default(""),
   nextSteps: z.array(z.string()).default([]),
 });
 
+export type Summary = z.infer<typeof summarySchema>;
+
 export type Evidence = z.infer<typeof evidenceSchema>;
 export type CriterionResult = z.infer<typeof criterionResultSchema>;
-export type GradingResult = z.infer<typeof gradingResultSchema>;
 
-export type GradingResponse = GradingResult & {
+/** Tek kriter uç noktasının yanıtı. */
+export type CriterionResponse = CriterionResult & {
+  quotesTotal: number;
+  quotesVerified: number;
+  warnings: string[];
+};
+
+/** İstemcinin kriter yanıtlarını ve özeti birleştirerek oluşturduğu tam sonuç. */
+export type GradingResponse = {
+  overall: {
+    score: number;
+    maxScore: number;
+    percentage: number;
+    letterGrade: string | null;
+    verdict: string;
+  };
+  criteria: CriterionResult[];
+  studentSummary: string;
+  teacherNotes: string;
+  nextSteps: string[];
+  rubricTitle: string;
   meta: {
     model: string;
     gradedAt: string;
@@ -114,23 +145,29 @@ export const parseRubricRequestSchema = z.object({
   language: z.string().optional(),
 });
 
-export const gradeRequestSchema = z.object({
-  /** Rubric doğrudan gönderilebilir; gönderilmezse rubricId veya aktif rubric kullanılır. */
-  rubric: rubricSchema.optional(),
-  /** Kaydedilmiş bir rubric'in kimliği. */
-  rubricId: z.string().optional(),
+/**
+ * Notlandırma kriter kriter yapılır: tek uzun model çağrısı sunucusuz ortamlarda
+ * süre sınırını aşıyordu. Her istek yalnızca bir kriteri değerlendirir.
+ */
+export const criterionRequestSchema = z.object({
+  rubric: rubricSchema,
+  /** Rubric içindeki kriterin kimliği. */
+  criterionId: z.string().min(1),
   essay: z.string().min(50, "Makale metni çok kısa."),
   essayTitle: z.string().optional(),
-  studentName: z.string().optional(),
   /** Geri bildirim dili: "tr", "en" vb. */
   language: z.string().default("tr"),
   /** Katı / normal / destekleyici puanlama tonu. */
   strictness: z.enum(["lenient", "balanced", "strict"]).default("balanced"),
 });
 
-export type GradeRequest = z.infer<typeof gradeRequestSchema>;
+export type CriterionRequest = z.infer<typeof criterionRequestSchema>;
 
-/** Rubric'i çözümlenmiş hale gelen istek: notlandırma katmanının beklediği biçim. */
-export type ResolvedGradeRequest = Omit<GradeRequest, "rubric" | "rubricId"> & {
-  rubric: Rubric;
-};
+export const summaryRequestSchema = z.object({
+  rubric: rubricSchema,
+  results: z.array(criterionResultSchema).min(1),
+  essayTitle: z.string().optional(),
+  language: z.string().default("tr"),
+});
+
+export type SummaryRequest = z.infer<typeof summaryRequestSchema>;

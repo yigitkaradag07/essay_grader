@@ -33,54 +33,57 @@ console.log(r.rubric.title,'|',r.rubric.totalPoints,'puan');
 for(const c of r.rubric.criteria) console.log('  -',c.id,'|',c.name,'|',c.maxScore,'puan | ağırlık',c.weight,'|',c.levels.length,'seviye');
 if(r.warnings.length) console.log('  uyarılar:',r.warnings);"
 
-step "5) /api/grade — makaleyi rubric'e göre notlandır"
+step "5) /api/grade/criterion — her kriter ayrı ve paralel"
 SAMPLES="$SAMPLES" node -e "
 const fs=require('fs');
 const rubric=require('/tmp/eg_rubric_res.json').rubric;
-const essay=fs.readFileSync(process.env.SAMPLES+'/essay.txt','utf8');
-fs.writeFileSync('/tmp/eg_grade_req.json',JSON.stringify({rubric,essay,essayTitle:'Should Schools Ban Smartphones?',language:'tr',strictness:'balanced'}));"
-curl -sS -X POST "$BASE/api/grade" -H 'content-type: application/json' \
-  --data @/tmp/eg_grade_req.json > /tmp/eg_grade_res.json
-node -e "
-const r=require('/tmp/eg_grade_res.json');
-if(r.error){console.error('HATA:',r.error,r.detail??'');process.exit(1);}
-console.log('NOT:',r.overall.score+'/'+r.overall.maxScore,'('+r.overall.percentage+'%)',r.overall.letterGrade??'');
-console.log('Genel:',r.overall.verdict,'\n');
-for(const c of r.criteria){
-  console.log(c.name+': '+c.score+'/'+c.maxScore+(c.level?' ('+c.level+')':''));
-  console.log('  gerekçe:',c.justification);
-  for(const e of c.evidence) console.log('  ['+(e.verified?'✓ doğrulandı':'✗ DOĞRULANAMADI')+'] \"'+e.quote.slice(0,80)+'\" → '+e.comment.slice(0,90));
+const essay=fs.readFileSync(process.env.SAMPLES+'/essay-weak.txt','utf8');
+for (const c of rubric.criteria) {
+  fs.writeFileSync('/tmp/eg_crit_'+c.id+'.json', JSON.stringify({
+    rubric, criterionId:c.id, essay, essayTitle:'Phones in School',
+    language:'tr', strictness:'strict'}));
 }
-console.log('\nÖĞRENCİ ÖZETİ:\n'+r.studentSummary);
-console.log('\nÖĞRETMEN NOTU:\n'+r.teacherNotes);
-console.log('\nSONRAKİ ADIMLAR:'); r.nextSteps.forEach(s=>console.log('  -',s));
-console.log('\nMETA:',JSON.stringify({model:r.meta.model,alıntı:r.meta.quotesVerified+'/'+r.meta.quotesTotal,kelime:r.meta.essayWords}));
-if(r.meta.warnings.length){console.log('UYARILAR:');r.meta.warnings.forEach(w=>console.log('  -',w));}"
+fs.writeFileSync('/tmp/eg_ids.txt', rubric.criteria.map(c=>c.id).join('\\n'));"
 
-step "6) JPEG rubric → metin (modelin görme yeteneğiyle)"
+for id in $(cat /tmp/eg_ids.txt); do
+  curl -sS -X POST "$BASE/api/grade/criterion" -H 'content-type: application/json' \
+    --data @/tmp/eg_crit_$id.json -o /tmp/eg_res_$id.json &
+done
+wait
+node -e "
+const fs=require('fs');
+const ids=fs.readFileSync('/tmp/eg_ids.txt','utf8').split('\\n').filter(Boolean);
+const results=ids.map(id=>JSON.parse(fs.readFileSync('/tmp/eg_res_'+id+'.json','utf8')));
+const bad=results.find(r=>r.error);
+if(bad){console.error('HATA:',bad.error);process.exit(1);}
+let total=0, max=0, q=0, qv=0;
+for(const r of results){
+  total+=r.score; max+=r.maxScore; q+=r.quotesTotal; qv+=r.quotesVerified;
+  console.log('  '+r.name+': '+r.score+'/'+r.maxScore+(r.level?' ('+r.level+')':''));
+  for(const e of r.evidence) console.log('    ['+(e.verified?'✓':'✗ DOĞRULANAMADI')+'] \"'+e.quote.replace(/\n/g,' ').slice(0,70)+'\"');
+  for(const w of r.warnings) console.log('    uyarı: '+w);
+}
+console.log('  TOPLAM: '+total+'/'+max+' | alıntı doğrulama: '+qv+'/'+q);
+fs.writeFileSync('/tmp/eg_summary_req.json', JSON.stringify({
+  rubric: require('/tmp/eg_rubric_res.json').rubric,
+  results: results.map(({quotesTotal,quotesVerified,warnings,...rest})=>rest),
+  essayTitle:'Phones in School', language:'tr'}));"
+
+step "6) /api/grade/summary — öğrenci özeti ve öğretmen notları"
+curl -sS -X POST "$BASE/api/grade/summary" -H 'content-type: application/json' \
+  --data @/tmp/eg_summary_req.json | node -e "
+let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const r=JSON.parse(s);
+if(r.error){console.error('HATA:',r.error);process.exit(1);}
+console.log('Genel:',r.verdict,'|',r.letterGrade??'-');
+console.log('\\nÖĞRENCİ ÖZETİ:\\n'+r.studentSummary);
+console.log('\\nÖĞRETMEN NOTU:\\n'+r.teacherNotes);
+console.log('\\nSONRAKİ ADIMLAR:'); r.nextSteps.forEach(x=>console.log('  -',x));});"
+
+step "7) JPEG rubric → metin (modelin görme yeteneğiyle)"
 curl -sS -F "file=@$SAMPLES/rubric.jpg" -F "kind=rubric" "$BASE/api/extract" | node -e "
 let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const r=JSON.parse(s);
 if(r.error){console.error('HATA:',r.error);process.exit(1);}
 console.log(r.format,'|',r.words,'kelime | uyarı:',r.warnings.length?r.warnings:'yok');
 console.log(r.text.split('\\n')[0]);});"
-
-step "7) rubric'i kaydet, aktif yap ve gövdesiz notlandır"
-node -e "
-const r=require('/tmp/eg_rubric_res.json');
-require('fs').writeFileSync('/tmp/eg_save.json',JSON.stringify({rubric:r.rubric,activate:true}));"
-curl -sS -X POST "$BASE/api/rubrics" -H 'content-type: application/json' --data @/tmp/eg_save.json \
-  | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const r=JSON.parse(s);
-console.log('kaydedildi:',r.rubric.title,'| aktif:',r.isActive);});"
-SAMPLES="$SAMPLES" node -e "
-const fs=require('fs');
-fs.writeFileSync('/tmp/eg_active_req.json',JSON.stringify({
-  essay:fs.readFileSync(process.env.SAMPLES+'/essay-weak.txt','utf8'),
-  essayTitle:'Phones in School',language:'tr',strictness:'strict'}));"
-curl -sS -X POST "$BASE/api/grade" -H 'content-type: application/json' --data @/tmp/eg_active_req.json \
-  | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const r=JSON.parse(s);
-if(r.error){console.error('HATA:',r.error);process.exit(1);}
-console.log('kullanılan rubric:',r.rubricTitle);
-console.log('zayıf makale (strict):',r.overall.score+'/'+r.overall.maxScore,r.overall.letterGrade??'');
-console.log('alıntı doğrulama:',r.meta.quotesVerified+'/'+r.meta.quotesTotal);});"
 
 printf '\n\033[1mTamamlandı.\033[0m\n'

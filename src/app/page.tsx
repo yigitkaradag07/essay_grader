@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { ShaderBackground } from "@/components/ui/shader-67130b9a";
 import { RubricBar, RubricDialog } from "@/components/RubricPanel";
 import { EssayPanel, type GradeOptions } from "@/components/EssayPanel";
@@ -9,15 +9,15 @@ import { Alert, Card, CardHeader, Spinner } from "@/components/ui/primitives";
 import {
   ApiRequestError,
   gradeEssay,
-  getRubric,
-  listRubrics,
+  type GradeProgress,
   type GradeResponse,
 } from "@/lib/client-api";
-import type { StoredRubric } from "@/lib/store";
+import { useActiveRubric, useIsHydrated } from "@/lib/rubric-store";
 
 export default function Home() {
-  const [active, setActive] = useState<StoredRubric | null>(null);
-  const [rubricLoading, setRubricLoading] = useState(true);
+  // Rubric'ler tarayıcıda saklanıyor; React dış depoya abone olup değişimi kendisi görür.
+  const active = useActiveRubric();
+  const hydrated = useIsHydrated();
   const [dialogOpen, setDialogOpen] = useState(false);
 
   const [result, setResult] = useState<GradeResponse | null>(null);
@@ -25,40 +25,13 @@ export default function Home() {
   const [studentName, setStudentName] = useState<string | undefined>();
   const [grading, setGrading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [progress, setProgress] = useState<GradeProgress | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const resultRef = useRef<HTMLDivElement>(null);
 
-  /** Aktif rubric'i sunucudan çeker; hata durumunda "rubric yok" kabul edilir. */
-  const fetchActive = useCallback(async (): Promise<StoredRubric | null> => {
-    try {
-      const { activeId } = await listRubrics();
-      return activeId ? await getRubric(activeId) : null;
-    } catch {
-      return null;
-    }
-  }, []);
-
-  /** Rubric panelinde bir değişiklik olduğunda çağrılır. */
-  const loadActive = useCallback(async () => {
-    setRubricLoading(true);
-    setActive(await fetchActive());
-    setRubricLoading(false);
-  }, [fetchActive]);
-
-  useEffect(() => {
-    // setState'ler yalnızca istek tamamlandığında, sökülme kontrolüyle çalışır.
-    let cancelled = false;
-    void fetchActive().then((entry) => {
-      if (cancelled) return;
-      setActive(entry);
-      setRubricLoading(false);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [fetchActive]);
-
   async function handleGrade(options: GradeOptions) {
+    if (!active) return;
+
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -66,19 +39,20 @@ export default function Home() {
     setGrading(true);
     setError(null);
     setResult(null);
+    setProgress(null);
     setGradedEssay(options.essay);
     setStudentName(options.studentName);
 
     try {
       const response = await gradeEssay(
         {
+          rubric: active.rubric,
           essay: options.essay,
           essayTitle: options.essayTitle,
-          studentName: options.studentName,
           language: options.language,
           strictness: options.strictness,
         },
-        controller.signal,
+        { signal: controller.signal, onProgress: setProgress },
       );
       setResult(response);
       // Sonuç makale panelinin altında kalıyor; öğretmeni oraya götür.
@@ -93,7 +67,10 @@ export default function Home() {
           : "Notlandırma sırasında beklenmeyen bir hata oluştu.",
       );
     } finally {
-      if (!controller.signal.aborted) setGrading(false);
+      if (!controller.signal.aborted) {
+        setGrading(false);
+        setProgress(null);
+      }
     }
   }
 
@@ -101,6 +78,7 @@ export default function Home() {
     abortRef.current?.abort();
     abortRef.current = null;
     setGrading(false);
+    setProgress(null);
   }
 
   return (
@@ -124,7 +102,7 @@ export default function Home() {
       <main className="mx-auto w-full max-w-4xl flex-1 space-y-4 px-6 py-8">
         <RubricBar
           active={active}
-          loading={rubricLoading}
+          loading={!hydrated}
           onOpen={() => setDialogOpen(true)}
         />
 
@@ -144,10 +122,21 @@ export default function Home() {
         {grading && (
           <Card>
             <CardHeader step={3} title="Değerlendirme" />
-            <div className="flex items-center gap-3 p-5 text-sm text-muted">
-              <Spinner />
-              Makale rubric kriterlerine göre okunuyor ve alıntılar doğrulanıyor. Bu işlem
-              genelde 1–2 dakika sürer.
+            <div className="space-y-3 p-5">
+              <div className="flex items-center gap-3 text-sm text-muted">
+                <Spinner />
+                {progress
+                  ? `${progress.label} değerlendirildi (${progress.done}/${progress.total})`
+                  : "Makale kriterlere göre okunuyor ve alıntılar doğrulanıyor…"}
+              </div>
+              <div className="h-1.5 overflow-hidden rounded-full bg-surface-muted">
+                <div
+                  className="h-full rounded-full bg-accent transition-[width] duration-500"
+                  style={{
+                    width: progress ? `${(progress.done / progress.total) * 100}%` : "6%",
+                  }}
+                />
+              </div>
             </div>
           </Card>
         )}
@@ -160,11 +149,7 @@ export default function Home() {
       </main>
 
       {dialogOpen && (
-        <RubricDialog
-          active={active}
-          onClose={() => setDialogOpen(false)}
-          onChanged={loadActive}
-        />
+        <RubricDialog active={active} onClose={() => setDialogOpen(false)} />
       )}
     </div>
   );
