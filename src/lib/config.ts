@@ -6,7 +6,10 @@ function req(name: string): string {
   const v = process.env[name];
   if (!v || !v.trim()) {
     throw new Error(
-      `Eksik ortam değişkeni: ${name}. .env.local dosyasına ekleyin (örnek için .env.example).`,
+      `Eksik ortam değişkeni: ${name}. ` +
+        `Yerelde .env.local dosyasına ekleyin (örnek için .env.example). ` +
+        `Vercel'de Settings > Environment Variables bölümüne ekleyip yeniden deploy edin ` +
+        `— ortam değişkeni eklemek mevcut deploy'u güncellemez.`,
     );
   }
   return v.trim();

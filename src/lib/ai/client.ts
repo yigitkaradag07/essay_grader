@@ -97,13 +97,17 @@ export async function generate(opts: GenerateOptions): Promise<GenerateResult> {
     ? AbortSignal.any([opts.signal, timeout])
     : timeout;
 
+  // Anahtar try bloğunun DIŞINDA okunur: içeride okunursa eksik ortam değişkeni
+  // hatası aşağıdaki ağ yakalayıcısına düşüp "sunucuya ulaşılamadı" gibi görünür.
+  const apiKey = config.apiKey;
+
   let res: Response;
   try {
     res = await fetch(url, {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-goog-api-key": config.apiKey,
+        "x-goog-api-key": apiKey,
       },
       body: JSON.stringify(body),
       signal,

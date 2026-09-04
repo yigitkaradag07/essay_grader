@@ -15,7 +15,9 @@ export async function GET() {
           ok: false,
           model: config.model,
           message:
-            "GOOGLE_AI_API_KEY tanımlı değil. .env.local dosyasına ekleyip sunucuyu yeniden başlatın.",
+            "GOOGLE_AI_API_KEY tanımlı değil. Yerelde .env.local dosyasına ekleyip sunucuyu " +
+            "yeniden başlatın. Vercel'de Settings > Environment Variables bölümüne ekleyip " +
+            "yeniden deploy edin — ortam değişkeni eklemek mevcut deploy'u güncellemez.",
         },
         { status: 503 },
       );
